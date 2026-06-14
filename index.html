@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Mandelbrot Explorer</title>
+<meta name="description" content="Interaktive Mandelbrot-Menge: zoomen, verschieben, Farbschemata wählen.">
+<meta name="theme-color" content="#0b0e14">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mandelbrot">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #14182198;
+    --accent: #ff7a3d;
+    --text: #e6e6e6;
+    --mono: 'JetBrains Mono', 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: none;
+  }
+  #canvas-container {
+    position: fixed;
+    inset: 0;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+  }
+  canvas.dragging { cursor: grabbing; }
+
+  #selectionBox {
+    position: absolute;
+    border: 1.5px solid var(--accent);
+    background: rgba(255, 122, 61, 0.12);
+    display: none;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  #ui {
+    position: fixed;
+    top: 0; left: 0;
+    padding: 16px;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: min(320px, 90vw);
+  }
+  .panel {
+    pointer-events: auto;
+    background: var(--panel);
+    backdrop-filter: blur(8px);
+    border: 1px solid #ffffff14;
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  h1 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #b5bac5;
+  }
+  .row .val {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  button, select {
+    background: #ffffff10;
+    border: 1px solid #ffffff20;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover, select:hover {
+    background: #ffffff20;
+    border-color: var(--accent);
+  }
+  button:active { transform: scale(0.97); }
+  select { flex: 1 1 auto; }
+
+  #hint {
+    position: fixed;
+    bottom: 14px; right: 14px;
+    font-size: 11px;
+    color: #6c7384;
+    pointer-events: none;
+    text-align: right;
+  }
+  #progress {
+    position: fixed;
+    top: 0; left: 0;
+    height: 2px;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.1s linear;
+    z-index: 10;
+  }
+  @media (max-width: 480px) {
+    #ui { max-width: 100vw; width: 100%; }
+    .panel { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+<div id="canvas-container">
+  <canvas id="mandelbrot"></canvas>
+  <div id="selectionBox"></div>
+</div>
+
+<div id="ui">
+  <div class="panel">
+    <h1>Mandelbrot Explorer</h1>
+    <div class="row"><span>Zentrum Re</span><span class="val" id="reVal">-0.5</span></div>
+    <div class="row"><span>Zentrum Im</span><span class="val" id="imVal">0</span></div>
+    <div class="row"><span>Zoom</span><span class="val" id="zoomVal">1×</span></div>
+    <div class="row"><span>Iterationen</span><span class="val" id="iterVal">100</span></div>
+    <div class="controls">
+      <select id="palette">
+        <option value="classic">Classic Fire</option>
+        <option value="ocean">Ocean</option>
+        <option value="grayscale">Grauwerte</option>
+        <option value="psychedelic">Psychedelic</option>
+        <option value="electric">Electric Blue</option>
+      </select>
+    </div>
+    <div class="controls">
+      <button id="resetBtn">Reset</button>
+      <button id="zoomInBtn">+</button>
+      <button id="zoomOutBtn">−</button>
+    </div>
+  </div>
+</div>
+
+<div id="hint">Maus: Bereich aufziehen = Zoom · Touch: 1 Finger = Verschieben, 2 Finger = Zoom</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('mandelbrot');
+  const ctx = canvas.getContext('2d');
+  const selectionBox = document.getElementById('selectionBox');
+  const progressBar = document.getElementById('progress');
+
+  const reValEl = document.getElementById('reVal');
+  const imValEl = document.getElementById('imVal');
+  const zoomValEl = document.getElementById('zoomVal');
+  const iterValEl = document.getElementById('iterVal');
+  const paletteSelect = document.getElementById('palette');
+
+  // View state: complex plane coordinates
+  let centerX = -0.5;
+  let centerY = 0;
+  let scale = 3.0; // width of view in complex plane units
+  let maxIter = 100;
+
+  let dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let width, height;
+
+  let renderToken = 0; // increments to cancel stale renders
+
+  // --- Color palettes -----------------------------------------------------
+  function hsv2rgb(h, s, v) {
+    h = h % 1; if (h < 0) h += 1;
+    const i = Math.floor(h * 6);
+    const f = h * 6 - i;
+    const p = v * (1 - s);
+    const q = v * (1 - f * s);
+    const t = v * (1 - (1 - f) * s);
+    let r, g, b;
+    switch (i % 6) {
+      case 0: r = v; g = t; b = p; break;
+      case 1: r = q; g = v; b = p; break;
+      case 2: r = p; g = v; b = t; break;
+      case 3: r = p; g = q; b = v; break;
+      case 4: r = t; g = p; b = v; break;
+      case 5: r = v; g = p; b = q; break;
+    }
+    return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+  }
+
+  const palettes = {
+    classic: (t) => {
+      // smooth fire gradient: black -> deep red -> orange -> yellow -> white
+      const stops = [
+        [0.00, [5, 2, 10]],
+        [0.20, [40, 10, 60]],
+        [0.45, [180, 30, 30]],
+        [0.65, [230, 110, 20]],
+        [0.85, [250, 210, 50]],
+        [1.00, [255, 255, 240]]
+      ];
+      return interp(stops, t);
+    },
+    ocean: (t) => {
+      const stops = [
+        [0.00, [2, 5, 20]],
+        [0.30, [5, 30, 80]],
+        [0.55, [10, 90, 140]],
+        [0.75, [40, 170, 190]],
+        [0.92, [170, 230, 230]],
+        [1.00, [255, 255, 255]]
+      ];
+      return interp(stops, t);
+    },
+    grayscale: (t) => {
+      const v = Math.round(255 * t);
+      return [v, v, v];
+    },
+    psychedelic: (t) => {
+      return hsv2rgb(t * 4 + 0.15, 0.85, t < 0.99 ? 1 : 0);
+    },
+    electric: (t) => {
+      const stops = [
+        [0.00, [0, 0, 10]],
+        [0.25, [10, 0, 90]],
+        [0.50, [40, 30, 200]],
+        [0.70, [80, 150, 255]],
+        [0.88, [180, 240, 255]],
+        [1.00, [255, 255, 255]]
+      ];
+      return interp(stops, t);
+    }
+  };
+
+  function interp(stops, t) {
+    t = Math.max(0, Math.min(1, t));
+    for (let i = 0; i < stops.length - 1; i++) {
+      const [t0, c0] = stops[i];
+      const [t1, c1] = stops[i + 1];
+      if (t >= t0 && t <= t1) {
+        const f = (t - t0) / (t1 - t0 || 1);
+        return [
+          Math.round(c0[0] + (c1[0] - c0[0]) * f),
+          Math.round(c0[1] + (c1[1] - c0[1]) * f),
+          Math.round(c0[2] + (c1[2] - c0[2]) * f)
+        ];
+      }
+    }
+    return stops[stops.length - 1][1];
+  }
+
+  let currentPalette = palettes.classic;
+  // Cache 0..255 color lookup, recomputed per render (depends on maxIter via smoothing only indirectly)
+  let colorCache = new Uint8ClampedArray(256 * 3);
+  function rebuildColorCache() {
+    for (let i = 0; i < 256; i++) {
+      const [r, g, b] = currentPalette(i / 255);
+      colorCache[i * 3] = r;
+      colorCache[i * 3 + 1] = g;
+      colorCache[i * 3 + 2] = b;
+    }
+  }
+  rebuildColorCache();
+
+  // --- Sizing --------------------------------------------------------------
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    width = Math.max(1, Math.round(rect.width * dpr));
+    height = Math.max(1, Math.round(rect.height * dpr));
+    canvas.width = width;
+    canvas.height = height;
+    render();
+  }
+
+  // --- Iteration counter heuristic ------------------------------------------
+  function computeMaxIter(scaleVal) {
+    // Increase iterations as we zoom in for detail retention
+    const base = 100;
+    const zoomFactor = Math.log2(3.0 / scaleVal);
+    return Math.min(2000, Math.round(base + zoomFactor * 40));
+  }
+
+  // --- Core renderer (chunked across rows for responsiveness) ---------------
+  function render() {
+    renderToken++;
+    const myToken = renderToken;
+
+    maxIter = computeMaxIter(scale);
+    iterValEl.textContent = maxIter;
+    reValEl.textContent = centerX.toFixed(6);
+    imValEl.textContent = centerY.toFixed(6);
+    const zoomFactor = 3.0 / scale;
+    zoomValEl.textContent = (zoomFactor < 1000
+      ? zoomFactor.toFixed(2)
+      : zoomFactor.toExponential(2)) + '×';
+
+    const imageData = ctx.createImageData(width, height);
+    const data = imageData.data;
+
+    const aspect = width / height;
+    const viewW = scale;
+    const viewH = scale / aspect;
+
+    const xMin = centerX - viewW / 2;
+    const yMin = centerY - viewH / 2;
+    const dx = viewW / width;
+    const dy = viewH / height;
+
+    const log2 = Math.log(2);
+    const escapeRadius2 = 1 << 16; // larger bailout for smoother coloring
+
+    const rowsPerChunk = Math.max(1, Math.floor(2000000 / width));
+    let row = 0;
+
+    progressBar.style.width = '0%';
+
+    function processChunk() {
+      if (myToken !== renderToken) return; // stale render, abort
+
+      const endRow = Math.min(height, row + rowsPerChunk);
+
+      for (let py = row; py < endRow; py++) {
+        const y0 = yMin + py * dy;
+        for (let px = 0; px < width; px++) {
+          const x0 = xMin + px * dx;
+
+          let x = 0, y = 0;
+          let x2 = 0, y2 = 0;
+          let iter = 0;
+
+          // Cardioid / period-2 bulb check for fast interior detection
+          {
+            const q = (x0 - 0.25) * (x0 - 0.25) + y0 * y0;
+            if (q * (q + (x0 - 0.25)) < 0.25 * y0 * y0) {
+              iter = maxIter; // inside main cardioid
+            } else if ((x0 + 1) * (x0 + 1) + y0 * y0 < 0.0625) {
+              iter = maxIter; // inside period-2 bulb
+            }
+          }
+
+          if (iter === 0) {
+            while (x2 + y2 <= escapeRadius2 && iter < maxIter) {
+              y = 2 * x * y + y0;
+              x = x2 - y2 + x0;
+              x2 = x * x;
+              y2 = y * y;
+              iter++;
+            }
+          }
+
+          const idx = (py * width + px) * 4;
+
+          if (iter >= maxIter) {
+            data[idx] = 0;
+            data[idx + 1] = 0;
+            data[idx + 2] = 0;
+            data[idx + 3] = 255;
+          } else {
+            // smooth coloring
+            const logZn = Math.log(x2 + y2) / 2;
+            const nu = Math.log(logZn / log2) / log2;
+            let smooth = iter + 1 - nu;
+            smooth = Math.max(0, smooth);
+            let t = smooth / maxIter;
+            t = Math.pow(t, 0.45); // perceptual stretch
+            const ci = Math.min(255, Math.max(0, Math.round(t * 255)));
+            const ci3 = ci * 3;
+            data[idx] = colorCache[ci3];
+            data[idx + 1] = colorCache[ci3 + 1];
+            data[idx + 2] = colorCache[ci3 + 2];
+            data[idx + 3] = 255;
+          }
+        }
+      }
+
+      row = endRow;
+      progressBar.style.width = Math.round((row / height) * 100) + '%';
+
+      if (row < height) {
+        requestAnimationFrame(processChunk);
+      } else {
+        ctx.putImageData(imageData, 0, 0);
+        progressBar.style.width = '0%';
+      }
+
+      // Progressive paint: draw what we have so far every few chunks
+      if (row % (rowsPerChunk * 4) === 0 || row >= height) {
+        ctx.putImageData(imageData, 0, 0);
+      }
+    }
+
+    requestAnimationFrame(processChunk);
+  }
+
+  // --- Interaction: pan & zoom-box selection ---------------------------------
+  let isDragging = false;   // panning (right mouse button / shift)
+  let isSelecting = false;  // zoom box selection (left mouse button)
+  let lastX = 0, lastY = 0;
+  let selStartX = 0, selStartY = 0;
+  let renderTimer = null;
+
+  function scheduleRender(delay = 80) {
+    if (renderTimer) clearTimeout(renderTimer);
+    renderTimer = setTimeout(render, delay);
+  }
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 2 || e.shiftKey) {
+      // Pan
+      isDragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      canvas.classList.add('dragging');
+    } else if (e.button === 0) {
+      // Start zoom-box selection
+      isSelecting = true;
+      const rect = canvas.getBoundingClientRect();
+      selStartX = e.clientX - rect.left;
+      selStartY = e.clientY - rect.top;
+      selectionBox.style.display = 'block';
+      selectionBox.style.left = selStartX + 'px';
+      selectionBox.style.top = selStartY + 'px';
+      selectionBox.style.width = '0px';
+      selectionBox.style.height = '0px';
+    }
+  });
+
+  window.addEventListener('mouseup', (e) => {
+    if (isDragging) {
+      isDragging = false;
+      canvas.classList.remove('dragging');
+      render();
+    }
+    if (isSelecting) {
+      isSelecting = false;
+      const rect = canvas.getBoundingClientRect();
+      let curX = e.clientX - rect.left;
+      let curY = e.clientY - rect.top;
+
+      let bx = Math.min(selStartX, curX);
+      let by = Math.min(selStartY, curY);
+      let bw = Math.abs(curX - selStartX);
+      let bh = Math.abs(curY - selStartY);
+
+      selectionBox.style.display = 'none';
+
+      // Ignore tiny accidental drags (treat as click, no zoom)
+      if (bw < 6 || bh < 6) return;
+
+      zoomToBox(bx, by, bw, bh, rect.width, rect.height);
+    }
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (isDragging) {
+      const dxPix = e.clientX - lastX;
+      const dyPix = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+
+      const aspect = width / height;
+      const viewW = scale;
+      const viewH = scale / aspect;
+
+      centerX -= (dxPix * dpr / width) * viewW;
+      centerY -= (dyPix * dpr / height) * viewH;
+
+      quickPreviewShift(dxPix * dpr, dyPix * dpr);
+    } else if (isSelecting) {
+      const rect = canvas.getBoundingClientRect();
+      let curX = e.clientX - rect.left;
+      let curY = e.clientY - rect.top;
+
+      // Constrain selection to canvas aspect ratio
+      const aspect = rect.width / rect.height;
+      let dxSel = curX - selStartX;
+      let dySel = curY - selStartY;
+
+      if (Math.abs(dxSel) / Math.abs(dySel || 1) > aspect) {
+        dySel = Math.sign(dySel || 1) * Math.abs(dxSel) / aspect;
+      } else {
+        dxSel = Math.sign(dxSel || 1) * Math.abs(dySel) * aspect;
+      }
+
+      const bx = Math.min(selStartX, selStartX + dxSel);
+      const by = Math.min(selStartY, selStartY + dySel);
+      const bw = Math.abs(dxSel);
+      const bh = Math.abs(dySel);
+
+      selectionBox.style.left = bx + 'px';
+      selectionBox.style.top = by + 'px';
+      selectionBox.style.width = bw + 'px';
+      selectionBox.style.height = bh + 'px';
+    }
+  });
+
+  function zoomToBox(bx, by, bw, bh, rectW, rectH) {
+    const aspect = width / height;
+    const viewW = scale;
+    const viewH = scale / aspect;
+
+    const xMin = centerX - viewW / 2;
+    const yMin = centerY - viewH / 2;
+
+    const u0 = bx / rectW;
+    const v0 = by / rectH;
+    const u1 = (bx + bw) / rectW;
+    const v1 = (by + bh) / rectH;
+
+    const newXMin = xMin + u0 * viewW;
+    const newXMax = xMin + u1 * viewW;
+    const newYMin = yMin + v0 * viewH;
+    const newYMax = yMin + v1 * viewH;
+
+    centerX = (newXMin + newXMax) / 2;
+    centerY = (newYMin + newYMax) / 2;
+    scale = newXMax - newXMin;
+
+    scale = Math.max(1e-13, Math.min(6, scale));
+
+    render();
+  }
+
+  // Lightweight visual feedback while dragging: shift canvas via CSS transform
+  let previewOffsetX = 0, previewOffsetY = 0;
+  function quickPreviewShift(dx, dy) {
+    previewOffsetX += dx;
+    previewOffsetY += dy;
+    canvas.style.transform = `translate(${previewOffsetX / dpr}px, ${previewOffsetY / dpr}px)`;
+    if (renderTimer) clearTimeout(renderTimer);
+    renderTimer = setTimeout(() => {
+      canvas.style.transform = '';
+      previewOffsetX = 0;
+      previewOffsetY = 0;
+      render();
+    }, 120);
+  }
+
+  // Wheel zoom (zoom toward cursor position)
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width; // 0..1
+    const my = (e.clientY - rect.top) / rect.height;
+
+    zoomAt(mx, my, e.deltaY < 0 ? 0.8 : 1.25);
+  }, { passive: false });
+
+  function zoomAt(mx, my, factor) {
+    const aspect = width / height;
+    const viewW = scale;
+    const viewH = scale / aspect;
+
+    const targetX = (centerX - viewW / 2) + mx * viewW;
+    const targetY = (centerY - viewH / 2) + my * viewH;
+
+    scale *= factor;
+    scale = Math.max(1e-13, Math.min(6, scale));
+
+    const newViewW = scale;
+    const newViewH = scale / aspect;
+
+    centerX = targetX - mx * newViewW + (newViewW / 2);
+    centerY = targetY - my * newViewH + (newViewH / 2);
+
+    render();
+  }
+
+  // Touch support: single finger pan, two fingers pinch zoom
+  let touchState = null;
+
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) {
+      touchState = { type: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY };
+    } else if (e.touches.length === 2) {
+      const [a, b] = e.touches;
+      touchState = {
+        type: 'pinch',
+        dist: distance(a, b),
+        cx: (a.clientX + b.clientX) / 2,
+        cy: (a.clientY + b.clientY) / 2
+      };
+    }
+  }, { passive: true });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (!touchState) return;
+
+    if (touchState.type === 'pan' && e.touches.length === 1) {
+      const t = e.touches[0];
+      const dxPix = t.clientX - touchState.x;
+      const dyPix = t.clientY - touchState.y;
+      touchState.x = t.clientX;
+      touchState.y = t.clientY;
+
+      const aspect = width / height;
+      const viewW = scale;
+      const viewH = scale / aspect;
+
+      centerX -= (dxPix * dpr / width) * viewW;
+      centerY -= (dyPix * dpr / height) * viewH;
+      quickPreviewShift(dxPix * dpr, dyPix * dpr);
+
+    } else if (touchState.type === 'pinch' && e.touches.length === 2) {
+      const [a, b] = e.touches;
+      const newDist = distance(a, b);
+      const factor = touchState.dist / newDist;
+      const rect = canvas.getBoundingClientRect();
+      const mx = (touchState.cx - rect.left) / rect.width;
+      const my = (touchState.cy - rect.top) / rect.height;
+
+      touchState.dist = newDist;
+      zoomAt(mx, my, factor);
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchend', () => {
+    touchState = null;
+    render();
+  });
+
+  function distance(a, b) {
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  }
+
+  // --- Buttons ---------------------------------------------------------------
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    centerX = -0.5;
+    centerY = 0;
+    scale = 3.0;
+    render();
+  });
+
+  document.getElementById('zoomInBtn').addEventListener('click', () => zoomAt(0.5, 0.5, 0.5));
+  document.getElementById('zoomOutBtn').addEventListener('click', () => zoomAt(0.5, 0.5, 2));
+
+  paletteSelect.addEventListener('change', () => {
+    currentPalette = palettes[paletteSelect.value];
+    rebuildColorCache();
+    render();
+  });
+
+  // --- Init --------------------------------------------------------------
+  window.addEventListener('resize', resize);
+  resize();
+})();
+</script>
+
+<script>
+  // Register service worker for offline capability
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch((err) => {
+        console.warn('Service Worker Registrierung fehlgeschlagen:', err);
+      });
+    });
+  }
+</script>
+
+</body>
+</html>
